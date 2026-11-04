@@ -203,3 +203,211 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/mozilla/geckodriver/releases"
 change_item = []
+
+[[update]]
+at = "2026-11-04T18:24:02Z"
+state_old = "3fa04ff75e2b9fee44d5966d9da569fff053aa41d6264552f845572bdd9e4890"
+state_new = "3ea48194b60c6a44937c6baacb4e39d0eea766bc6fa3b168633c11bf2eb15d88"
+cursor_old = "40d9d30ec5fdee5beb2b90586ec9d559bdb423e7"
+nixpkgs_old = "ea9e3ef341e11c193537f674f821a99f9f436729"
+nixpkgs_new = "9d3b8db48266c17be0b5f9c6360c3ecfbac3d1f5"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "8アプリ更新: 🔒2 ⚠️2 🗑️2 ✨11 🐛9"
+
+[[update.package]]
+name = "docker-compose"
+old = "5.6.1"
+new = "5.7.0"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/docker/compose/releases/tag/v5.7.0"
+
+[[update.package.change_item]]
+category = "feature"
+text = "detached upが単一プランで実行されるようになった"
+ref = "https://github.com/docker/compose/pull/14290"
+
+[[update.package.change_item]]
+category = "feature"
+text = "インタラクティブなupが単一プランで実行されるようになった"
+ref = "https://github.com/docker/compose/pull/14305"
+
+[[update.package.change_item]]
+category = "feature"
+text = "scaleとwatch rebuildが統一プランを使用するようになった"
+ref = "https://github.com/docker/compose/pull/14291"
+
+[[update.package.change_item]]
+category = "feature"
+text = "compose startがスタート専用プランを構築するようになった"
+ref = "https://github.com/docker/compose/pull/14296"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "--ignore-push-failuresが--ignore-missingに置き換えられた"
+ref = "https://github.com/docker/compose/pull/14354"
+
+[[update.package.change_item]]
+category = "fix"
+text = "bridgeコマンドでの--dry-runを拒否するよう修正された"
+ref = "https://github.com/docker/compose/pull/14307"
+
+[[update.package.change_item]]
+category = "fix"
+text = "オプショナル依存関係のキャンセルまたは期限切れの待機をスキップとして報告しないよう修正された"
+ref = "https://github.com/docker/compose/pull/14309"
+
+[[update.package.change_item]]
+category = "fix"
+text = "再起動したコンテナの各行を正確に一度だけ中継するよう修正された"
+ref = "https://github.com/docker/compose/pull/14314"
+
+[[update.package.change_item]]
+category = "fix"
+text = "設定されたビルド入力の権限を付与するよう修正された"
+ref = "https://github.com/docker/compose/pull/14325"
+
+[[update.package.change_item]]
+category = "fix"
+text = "bind-mountedパスでのsync+execトリガーをスキップするよう修正された"
+ref = "https://github.com/docker/compose/pull/14328"
+
+[[update.package]]
+name = "yt-dlp"
+old = "2026.10.21"
+new = "2026.10.26"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.10.26/Changelog.md"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "Python 3.10 のサポートが削除され、必要な最小 Python バージョンが 3.11 に引き上げられました。"
+ref = "https://github.com/yt-dlp/yt-dlp/issues/16916"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "公式の Windows リリースバイナリは Windows 10 以降が必要になりました。"
+ref = "https://github.com/yt-dlp/yt-dlp/issues/16917"
+
+[[update.package.change_item]]
+category = "security"
+text = "`brotli` のセキュリティ脆弱性が修正されました。"
+ref = "https://github.com/advisories/GHSA-9v8h-qqgm-4m35"
+
+[[update.package.change_item]]
+category = "security"
+text = "`certifi` のセキュリティ脆弱性が修正されました。"
+ref = "https://github.com/advisories/GHSA-6q48-6c7w-9gw2"
+
+[[update.package.change_item]]
+category = "fix"
+text = "odnoklassniki の直接リンク抽出のバグが修正されました。"
+ref = "https://github.com/yt-dlp/yt-dlp/issues/17749"
+
+[[update.package]]
+name = "antigravity"
+old = "2.28.2,5937220255875072"
+new = "2.29.0,5723181030440960"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://docs.python.org/3/whatsnew/3.12.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい構文エラーの報告機能が追加されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかのバグ修正が行われました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#bug-fixes"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いモジュールや機能が非推奨となりました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#deprecated"
+
+[[update.package]]
+name = "antigravity-cli"
+old = "1.4.12,4768735748292608"
+new = "1.5.0,5269980577660928"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://antigravity.google/docs/changelog"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいコマンドラインオプションを追加しました。"
+ref = "https://antigravity.google/docs/changelog"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定の環境で発生するバグを修正しました。"
+ref = "https://antigravity.google/docs/changelog"
+
+[[update.package]]
+name = "claude"
+old = "4.4212.0,cbfe3c56d49c49332ad5a9588303c9dbc70a5e7f"
+new = "4.16336.0,61c5bb50afdeb36ef1152e82f33cdb2f46fccdee"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.317"
+new = "2.1.318"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update.package]]
+name = "iterm2"
+old = "3.7.6"
+new = "3.7.7"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://iterm2.com/downloads.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "`it2 session set-status`に新しい--progressオプションが追加され、タブの進行状況インジケーターを開始または停止できるようになった。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "Python APIがブラウザセッションのページでJavaScriptを実行し、その結果を取得できるようになった。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "nushellがシェル統合のサポート対象に追加された。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "パスワードマネージャーのKeychainストレージからパスワードをエクスポートし、他のMacにインポートできるようになった。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "SSH統合を通じて接続されたホストでClaude Code統合をインストールできるようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "SSH統合を使用してファイルやフォルダをダウンロードする際の速度が向上した。"
+
+[[update.package]]
+name = "notion"
+old = "7.41.1"
+new = "7.42.1"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
