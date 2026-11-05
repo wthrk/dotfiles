@@ -411,3 +411,23 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-11-05T18:24:57Z"
+state_old = "3ea48194b60c6a44937c6baacb4e39d0eea766bc6fa3b168633c11bf2eb15d88"
+state_new = "02424ca27921d456edc8b05fb225656b09301f2d8bd602c13eeeae7ff5d9a2fd"
+cursor_old = "5c72387ad9b767021ade9659cb83c9400ca009ea"
+nixpkgs_old = "9d3b8db48266c17be0b5f9c6360c3ecfbac3d1f5"
+nixpkgs_new = "13e53762c5afaf384d4614e94527a9ccfafe41d0"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "1アプリ更新"
+
+[[update.package]]
+name = "zed"
+old = "1.26.2"
+new = "1.27.0"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
