@@ -47,17 +47,6 @@
     # トリガーにできない。
     casks = [
       "antigravity"
-      # self-updater（`agy update`）が Homebrew の binary symlink `/opt/homebrew/bin/agy` を実ファイルへ
-      # 置き換える。Homebrew はこの cask を未インストールと見ており（Caskroom は `.metadata` のみ）、
-      # `brew bundle` は `greedy` に関わらず `brew install --cask --adopt` を実行するが、`--adopt` は symlink 以外が
-      # 占める target を上書きしないため、install は実ファイルの `/opt/homebrew/bin/agy` に当たって
-      # 「It seems there is already a Binary at」で失敗する。この install 失敗はリポジトリ差分では解消せず、
-      # `/opt/homebrew/bin/agy` の撤去で解消する。`greedy = false` は、再導入後に self-updater が symlink を
-      # 実ファイルへ置き換えた際の再 upgrade 試行を止める。版の前進は self-updater に委ねる。
-      {
-        name = "antigravity-cli";
-        greedy = false;
-      }
       "azookey"
       "bitwarden"
       "claude"
