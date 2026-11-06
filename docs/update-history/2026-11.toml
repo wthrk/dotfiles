@@ -431,3 +431,64 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-11-06T18:26:00Z"
+state_old = "02424ca27921d456edc8b05fb225656b09301f2d8bd602c13eeeae7ff5d9a2fd"
+state_new = "6a40b41f50eb2f5f676b52d7fb7ab97699b40cf2af145b614125b63844b77259"
+cursor_old = "6ad79b80bca26440608612dcd126475c56c2bb8d"
+nixpkgs_old = "13e53762c5afaf384d4614e94527a9ccfafe41d0"
+nixpkgs_new = "6dadaf4375be35033e1c84395adbd53ff5fded96"
+reference = "darwinConfigurations.ci-ref"
+severity = "minor"
+overall = "5アプリ更新: ✨1"
+
+[[update.package]]
+name = "chromedriver"
+old = "156.0.8078.80"
+new = "157.0.8103.39"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://chromereleases.googleblog.com/"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいバージョンのChromeDriverがリリースされ、Chrome 157に対応しました。"
+ref = "https://chromereleases.googleblog.com/"
+
+[[update.package]]
+name = "bitwarden"
+old = "2026.10.3"
+new = "2026.10.4"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude"
+old = "4.16336.0,61c5bb50afdeb36ef1152e82f33cdb2f46fccdee"
+new = "4.23118.0,8175c354eda704cea00fdeddfa69cea329dd321a"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "kicad"
+old = "10.0.7"
+new = "10.0.8"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "notion"
+old = "7.42.1"
+new = "7.42.3"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
