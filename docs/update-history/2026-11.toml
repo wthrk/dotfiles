@@ -492,3 +492,194 @@ change = "upgraded"
 declared = true
 source = "brew"
 change_item = []
+
+[[update]]
+at = "2026-11-07T18:22:47Z"
+state_old = "6a40b41f50eb2f5f676b52d7fb7ab97699b40cf2af145b614125b63844b77259"
+state_new = "6d66291b61851fac59303f185c21ea832c1b982b7931c0e411a3de19973d5b35"
+cursor_old = "afaf7c58aeab384cd28773785f7fccf4f00188c3"
+nixpkgs_old = "6dadaf4375be35033e1c84395adbd53ff5fded96"
+nixpkgs_new = "4fe25e12eb9f4c744966dd3de5a05246cf098601"
+reference = "darwinConfigurations.ci-ref"
+severity = "critical"
+overall = "5アプリ更新: 🔒9 ⚠️1 🗑️1 ✨1 🐛19"
+
+[[update.package]]
+name = "composer"
+old = "2.10.3"
+new = "2.11.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/composer/composer/releases"
+
+[[update.package.change_item]]
+category = "breaking"
+text = "`source-fallback` 設定オプションが削除され、dist インストールはソースにフォールバックしなくなった。"
+
+[[update.package.change_item]]
+category = "security"
+text = "`vendor/composer/installed.json` のパッケージ名がインストール時にベンダーディレクトリを脱出できる問題を修正。"
+ref = "https://github.com/composer/composer/security/advisories/GHSA-c968-33g3-wh7p"
+
+[[update.package.change_item]]
+category = "security"
+text = "インラインリポジトリのHTTPヘッダーが `composer.lock` に書き込まれる問題を修正。"
+ref = "https://github.com/composer/composer/security/advisories/GHSA-fm2w-xgf2-f9fh"
+
+[[update.package.change_item]]
+category = "security"
+text = "`@composer` スクリプトに渡される追加引数がエスケープされない問題を修正。"
+
+[[update.package.change_item]]
+category = "security"
+text = "svn パスワードがデバッグ出力から隠されない問題を修正。"
+
+[[update.package.change_item]]
+category = "security"
+text = "hg と fossil のエラー出力に埋め込まれたURL認証情報をサニタイズ。"
+
+[[update.package.change_item]]
+category = "security"
+text = "信頼されていない中間証明書を提示するTLS接続を拒否。"
+
+[[update.package.change_item]]
+category = "security"
+text = "bin プロキシがパッケージ制御のbinパスとシェバンをエスケープせずに埋め込む問題を修正。"
+
+[[update.package.change_item]]
+category = "security"
+text = "`secure-http` が不正なURLを捕捉できない問題を修正。"
+
+[[update.package.change_item]]
+category = "security"
+text = "リポジトリオプションが他のホストのdist URLに送信される問題を修正。"
+
+[[update.package]]
+name = "fd"
+old = "10.5.0"
+new = "10.5.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/sharkdp/fd/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Windowsでの`--absolute-path`オプションのバグを修正し、パスが正しく表示されるようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`--ignore`と`--no-hidden`オプションの動作を修正し、`-u`オプションとの組み合わせで期待通りに動作するようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "インラインのケースインセンシティブな正規表現フラグが他の`--and`パターンに影響を与えないよう修正された。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`--format`テンプレートが`-`で始まる場合でも正しく受け入れられるよう修正された。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "エラーメッセージ内の改行が不適切にエスケープされる問題を修正。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "サポートされているシステムでjemallocをデフォルトのアロケータとして復元。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "`cargo binstall`のリリースURLを修正し、正しいバイナリ名が使用されるようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "サイズ制約の解析時に整数オーバーフローを修正し、`u64::MAX`を超える値を拒否するようになった。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "zshの補完に関するさまざまな修正と更新。"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Windowsで`--full-path`を使用する際の`--glob`パターンの問題を修正。"
+
+[[update.package]]
+name = "jujutsu"
+old = "0.46.0"
+new = "0.47.1"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://github.com/jj-vcs/jj/releases"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Linux ビルドを壊していた依存関係のエラーを修正しました。"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "`git.sign-on-push` オプションが非推奨となり、`revsets.git-sign-on-push` に置き換えられました。"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい `revsets.git-sign-on-push` 設定オプションが追加され、`jj git push` 実行時に署名されるコミットの revset を指定できます。"
+
+[[update.package]]
+name = "rust-analyzer"
+old = "2026-10-26"
+new = "2026-11-02"
+change = "upgraded"
+declared = true
+source = "nix"
+notes_url = "https://rust-analyzer.github.io/thisweek/2026/10/26/changelog-351.html"
+
+[[update.package.change_item]]
+category = "fix"
+text = "無効な推論型を持つ範囲パターンを emit する問題を修正。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23533"
+
+[[update.package.change_item]]
+category = "fix"
+text = "マクロ呼び出し内の inline_call でのパニックを修正。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23231"
+
+[[update.package.change_item]]
+category = "fix"
+text = "キーワードモジュール名の補完をエスケープ。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23518"
+
+[[update.package.change_item]]
+category = "fix"
+text = "補完に main と lib モジュールを提供。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23529"
+
+[[update.package.change_item]]
+category = "fix"
+text = "ドットなしの self に対する ref-match を計算。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23489"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Windows 上の NamedTempFile に関する問題を修正。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23424"
+
+[[update.package.change_item]]
+category = "fix"
+text = "Cargo メタデータを取得する際にロックファイルのマニフェスト祖先を検索。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23296"
+
+[[update.package.change_item]]
+category = "fix"
+text = "experimental/serverStatusNotification をサポートしていないクライアントのステータスメッセージ報告を修正。"
+ref = "https://github.com/rust-analyzer/rust-analyzer/pull/23552"
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.318"
+new = "2.1.319"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
