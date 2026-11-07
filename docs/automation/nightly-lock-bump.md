@@ -36,8 +36,7 @@ PR の push と status 投稿のために `contents` / `pull-requests` / `status
 
 Home Manager の activation は runner 上で実行するが、darwin activation（`darwin-rebuild switch` / `brew bundle`）
 は実行しない。darwin activation を実行するのは
-[`runtime-integration.yml`](../../.github/workflows/runtime-integration.yml)（週次 cron / `workflow_dispatch`）と
-各マシンの `dotfiles update` である。
+[`runtime-integration.yml`](../../.github/workflows/runtime-integration.yml)と各マシンの `dotfiles update` である。
 
 ## インライン `verify-bump-lock` の判定内容と適用範囲
 
