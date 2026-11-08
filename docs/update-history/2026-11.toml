@@ -683,3 +683,15 @@ declared = true
 source = "brew"
 notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
 change_item = []
+
+[[update]]
+at = "2026-11-08T18:23:13Z"
+state_old = "6d66291b61851fac59303f185c21ea832c1b982b7931c0e411a3de19973d5b35"
+state_new = "7cd407e9afd267bf244fcd2c3e5e58b0c699f08f2d1c093bdf1658cc69377b7f"
+cursor_old = "69c54d72f4bacc95894d0e3c651d760bc144aa32"
+nixpkgs_old = "4fe25e12eb9f4c744966dd3de5a05246cf098601"
+nixpkgs_new = "4fe25e12eb9f4c744966dd3de5a05246cf098601"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "0アプリ更新"
+package = []
