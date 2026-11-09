@@ -695,3 +695,15 @@ reference = "darwinConfigurations.ci-ref"
 severity = "none"
 overall = "0アプリ更新"
 package = []
+
+[[update]]
+at = "2026-11-09T18:25:43Z"
+state_old = "7cd407e9afd267bf244fcd2c3e5e58b0c699f08f2d1c093bdf1658cc69377b7f"
+state_new = "6aa8fedcac364bce6a33c58eaf4bf2d4fedaf1fda09b7f52b8b080e92e749eb2"
+cursor_old = "3ddee2b0d92e9fe88c56cb49e6a74adbdc4f0cfa"
+nixpkgs_old = "4fe25e12eb9f4c744966dd3de5a05246cf098601"
+nixpkgs_new = "4fe25e12eb9f4c744966dd3de5a05246cf098601"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "0アプリ更新"
+package = []
