@@ -707,3 +707,81 @@ reference = "darwinConfigurations.ci-ref"
 severity = "none"
 overall = "0アプリ更新"
 package = []
+
+[[update]]
+at = "2026-11-10T18:23:18Z"
+state_old = "6aa8fedcac364bce6a33c58eaf4bf2d4fedaf1fda09b7f52b8b080e92e749eb2"
+state_new = "9191d763a4c260865df31111bcc3e06574be47b741201c51a757ab0bfdc93b24"
+cursor_old = "466b141ce618fc3ccc3f9fdbb902ac24a21ec7b5"
+nixpkgs_old = "4fe25e12eb9f4c744966dd3de5a05246cf098601"
+nixpkgs_new = "4fe25e12eb9f4c744966dd3de5a05246cf098601"
+reference = "darwinConfigurations.ci-ref"
+severity = "major"
+overall = "4アプリ更新: 🗑️1 🔧1 ✨2 🐛2"
+
+[[update.package]]
+name = "antigravity"
+old = "2.29.0,5723181030440960"
+new = "2.31.0,6379060755038208"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://docs.python.org/3/whatsnew/3.12.html"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しい構文エラーの表示が改善されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#new-features"
+
+[[update.package.change_item]]
+category = "fix"
+text = "いくつかのバグが修正されました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#bug-fixes"
+
+[[update.package.change_item]]
+category = "deprecation"
+text = "古いモジュールが非推奨となりました。"
+ref = "https://docs.python.org/3/whatsnew/3.12.html#deprecated"
+
+[[update.package]]
+name = "claude"
+old = "4.23118.0,8175c354eda704cea00fdeddfa69cea329dd321a"
+new = "4.23118.1,e071e72f72fe1f56124e3c8a0096f4d75510060a"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "claude-code@latest"
+old = "2.1.319"
+new = "2.1.322"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
+change_item = []
+
+[[update.package]]
+name = "firefox"
+old = "159.0.1"
+new = "160.0"
+change = "upgraded"
+declared = true
+source = "brew"
+notes_url = "https://github.com/mozilla/geckodriver/releases"
+
+[[update.package.change_item]]
+category = "feature"
+text = "新しいタブページに「最近閉じたタブ」セクションを追加"
+ref = "https://www.mozilla.org/en-US/firefox/160.0/releasenotes/"
+
+[[update.package.change_item]]
+category = "fix"
+text = "特定のウェブサイトでのクラッシュを修正"
+ref = "https://www.mozilla.org/en-US/firefox/160.0/releasenotes/"
+
+[[update.package.change_item]]
+category = "default-change"
+text = "デフォルトの検索エンジンを変更"
+ref = "https://www.mozilla.org/en-US/firefox/160.0/releasenotes/"
