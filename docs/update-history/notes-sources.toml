@@ -18,7 +18,7 @@ discovered_at = "2026-11-06T18:26:00Z"
 
 ["brew/claude"]
 origin = "none"
-discovered_at = "2026-11-10T18:23:18Z"
+discovered_at = "2026-11-11T18:22:16Z"
 
 ["brew/claude-code@latest"]
 source = "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md"
@@ -58,7 +58,7 @@ discovered_at = "2026-11-06T18:26:00Z"
 
 ["brew/notion"]
 origin = "none"
-discovered_at = "2026-11-06T18:26:00Z"
+discovered_at = "2026-11-11T18:22:16Z"
 
 ["brew/visual-studio-code"]
 origin = "none"
