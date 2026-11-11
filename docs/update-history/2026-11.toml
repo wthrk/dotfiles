@@ -785,3 +785,32 @@ ref = "https://www.mozilla.org/en-US/firefox/160.0/releasenotes/"
 category = "default-change"
 text = "デフォルトの検索エンジンを変更"
 ref = "https://www.mozilla.org/en-US/firefox/160.0/releasenotes/"
+
+[[update]]
+at = "2026-11-11T18:22:16Z"
+state_old = "9191d763a4c260865df31111bcc3e06574be47b741201c51a757ab0bfdc93b24"
+state_new = "a1e0df16a8bdeda4c9ccfa26d4ad7c4477a357efaaf9ea62d91f18de08629832"
+cursor_old = "304d005331e172368a017a63fdc85882a9b88df1"
+nixpkgs_old = "4fe25e12eb9f4c744966dd3de5a05246cf098601"
+nixpkgs_new = "4fe25e12eb9f4c744966dd3de5a05246cf098601"
+reference = "darwinConfigurations.ci-ref"
+severity = "none"
+overall = "2アプリ更新"
+
+[[update.package]]
+name = "claude"
+old = "4.23118.1,e071e72f72fe1f56124e3c8a0096f4d75510060a"
+new = "5.1231.2,26912242b6649f3e503e012d9b7b9367d09c68e4"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
+
+[[update.package]]
+name = "notion"
+old = "7.42.3"
+new = "7.43.0"
+change = "upgraded"
+declared = true
+source = "brew"
+change_item = []
