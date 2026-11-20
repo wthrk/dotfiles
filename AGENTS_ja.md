@@ -1,6 +1,6 @@
 # AGENTS_ja.md
 
-これはこのリポジトリの最小セッション入口文書である。言語方針、スキル先行の入口順序、役割とスキルの対応、オーケストレーター禁止事項への導線、翻訳同期だけを保持する。
+これはこのリポジトリの最小セッション入口文書である。言語方針、スキル先行の入口順序、役割とスキルの対応、更新と適用への導線、オーケストレーター禁止事項への導線、翻訳同期だけを保持する。
 
 ## コミュニケーション
 
@@ -18,6 +18,10 @@
 - [docs/README.md](docs/README.md) から開始し、続いて [docs/task-governance/README.md](docs/task-governance/README.md) と [docs/task-governance/workflow.md](docs/task-governance/workflow.md) を読む。
 - 文書配置、正本扱い、重複禁止は [docs/docs-governance.md](docs/docs-governance.md) を適用する。
 - 役割詳細は `.agents/skills/*/SKILL.md` が所有する。ここで再掲しない。
+
+## 更新と適用
+
+- パッケージの変更が GitHub から `dotfiles update` を通じて実機に届く経路は [更新と適用](README.md#更新と適用) を参照する。Homebrew cask の固定と無人 upgrade は [Homebrew cask の成果物固定](docs/automation/homebrew-cask-pinning.md) を参照する。
 
 ## 役割とスキルの対応
 
