@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This is the minimal session-entry document for this repository. It keeps only language policy, skill-first entry order, role-to-skill binding, orchestrator prohibition pointers, and translation synchronization.
+This is the minimal session-entry document for this repository. It keeps only language policy, skill-first entry order, role-to-skill binding, update and deployment pointers, orchestrator prohibition pointers, and translation synchronization.
 
 ## Communication
 
@@ -18,6 +18,10 @@ This is the minimal session-entry document for this repository. It keeps only la
 - Start from [docs/README.md](docs/README.md), then [docs/task-governance/README.md](docs/task-governance/README.md) and [docs/task-governance/workflow.md](docs/task-governance/workflow.md).
 - Apply [docs/docs-governance.md](docs/docs-governance.md) for document placement, canonical-source handling, and duplication rules.
 - Role details live in `.agents/skills/*/SKILL.md`; do not restate those rules here.
+
+## Updates and Deployment
+
+- For how package changes reach installed machines from GitHub through `dotfiles update`, see [Updating and applying](README.md#更新と適用). For Homebrew cask pins and unattended upgrades, see [Homebrew cask pinning](docs/automation/homebrew-cask-pinning.md).
 
 ## Role-to-Skill Binding
 

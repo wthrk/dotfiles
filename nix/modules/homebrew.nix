@@ -49,9 +49,9 @@
       "antigravity"
       "azookey"
       "bitwarden"
+      "chatgpt"
       "claude"
       "claude-code@latest"
-      "codex-app"
       "discord"
       "firefox"
       "font-cica"
@@ -70,6 +70,7 @@
         greedy = false;
       }
       "kicad"
+      "muse-code"
       # `auto_updates true` の cask で、Notion 自身の updater が `/Applications/Notion.app` を差し替える。greedy
       # upgrade は root 所有の `/Applications/Notion.app` への `sudo` で password を要求して止まり、その後は
       # Caskroom に残った旧版との衝突「already an App at '/opt/homebrew/Caskroom/notion/7.31.0/Notion.app'」で
