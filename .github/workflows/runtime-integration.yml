@@ -2,6 +2,9 @@ name: macOS runtime integration
 
 on:
   workflow_dispatch:
+  # darwin activation と root からの全ユーザー走査を実際に起動するのはこの workflow だけなので、
+  # PR ごとに走らせる。週次 cron は PR を伴わない上流の前進を見るために残す。
+  pull_request:
   schedule:
     - cron: "0 15 * * 0"
 
@@ -16,7 +19,9 @@ env:
   NIX_CONFIG: |
     experimental-features = nix-command flakes
     access-tokens = github.com=${{ github.token }}
-  DOTFILES_TEST_SOURCE_HASH: ${{ github.sha }}
+  # ゲストはこの commit を GitHub から取得して bootstrap するため、push 済みの commit を渡す。
+  # `pull_request` の `github.sha` は merge 参照側の commit なので、head の commit を使う。
+  DOTFILES_TEST_SOURCE_HASH: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   # この runner がゲストそのものになる。checkout・Rust toolchain・Homebrew 除去でゲストを整え、
