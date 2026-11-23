@@ -15,4 +15,4 @@
 
 - 文書構成と正本の扱いは [docs-governance.md](docs-governance.md) を参照する。
 - タスク実行の進め方は [task-governance/README.md](task-governance/README.md) を参照する。
-- 領域仕様は各領域の README から辿る。
+- 領域仕様は各領域の README から正本本文まで辿る。パッケージの追加・再導入・更新では、[repository root の「更新と適用」](../README.md#更新と適用) と [automation/README.md](automation/README.md) から更新・適用経路の正本を参照する。

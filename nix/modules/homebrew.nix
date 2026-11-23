@@ -47,6 +47,7 @@
     # トリガーにできない。
     casks = [
       "antigravity"
+      "antigravity-cli"
       "azookey"
       "bitwarden"
       "chatgpt"
